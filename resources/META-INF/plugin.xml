@@ -1,8 +1,8 @@
 <idea-plugin version="2">
   <id>net.hexar.json2pojo</id>
-  <name>Json2Pojo</name>
+  <name>Json2Pojo+</name>
   <version>1.0.10</version>
-  <vendor email="starksm64@gmail.com" url="https://github.com/HexarA/Json2Pojo">HexarA</vendor>
+  <vendor email="starksm64@gmail.com" url="https://github.com/starksm64/Json2Pojo">HexarA</vendor>
 
   <description><![CDATA[
       Allows for easy creation of Java POJOs from JSON, with GSON annotations and accessors. Once installed,

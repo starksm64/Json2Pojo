@@ -7,3 +7,8 @@ IntelliJ plugin that allows for easy creation of Java POJOs from JSON, with GSON
 3. Enter the root class name and enter your source JSON text. 
 
 The plugin will generate your new classes in the target directory for easy deserialization with GSON.
+
+# Acknowledgement
+This is a fork of
+https://github.com/HexarA/Json2Pojo
+that has evolved for my purposes.
