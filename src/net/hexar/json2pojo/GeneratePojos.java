@@ -4,6 +4,7 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.google.gson.annotations.Expose;
 import com.google.gson.annotations.SerializedName;
+import com.intellij.openapi.diagnostic.Logger;
 import com.intellij.openapi.progress.ProgressIndicator;
 import com.intellij.openapi.vfs.VirtualFile;
 import com.sun.codemodel.*;
@@ -23,6 +24,7 @@ class GeneratePojos {
     //region CONSTANTS -------------------------------------------------------------------------------------------------
 
     private static final boolean ALWAYS_ANNOTATE_EXPOSE = false;
+    private static final Logger log = Logger.getInstance("GeneratePojos");
 
     //endregion
 
@@ -64,7 +66,7 @@ class GeneratePojos {
      * @param generateBuilders true if the generated class should omit setters and generate a builder instead.
      * @param useMPrefix true if the generated fields should use an 'm' prefix.
      */
-    void generateFromJson(String rootName, String json, boolean generateBuilders, boolean useMPrefix) {
+    void generateFromJson(String rootName, String json, boolean generateBuilders, boolean useMPrefix, boolean useDoubleValueGetters) {
         mFieldComparator = new FieldComparator(useMPrefix);
 
         try {
@@ -81,7 +83,7 @@ class GeneratePojos {
             JsonNode rootNode = mapper.readTree(json);
 
             // Recursively generate
-            generate(rootNode, formatClassName(rootName), jPackage, generateBuilders, useMPrefix);
+            generate(rootNode, formatClassName(rootName), jPackage, generateBuilders, useMPrefix, useDoubleValueGetters);
 
             // Build
             jCodeModel.build(new File(mModuleSourceRoot.getPath()));
@@ -102,16 +104,17 @@ class GeneratePojos {
      * @throws Exception if an error occurs.
      */
     private void generate(JsonNode rootNode, String rootName, JPackage jPackage, boolean generateBuilders,
-                          boolean useMPrefix) throws Exception {
+                          boolean useMPrefix, boolean useDoubleValueGetters) throws Exception {
         // First create all referenced sub-types and collect field data
         parseObject(rootNode, rootName, jPackage);
 
         // Now create the actual fields
         int i = 1;
         for (JDefinedClass clazz : mClassMap.values()) {
+            log.info("Generating class: "+clazz.name());
             // Generate the fields
             List<GeneratedField> fields = generateFields(clazz, mFieldMap.get(clazz), jPackage.owner(),
-                    generateBuilders, useMPrefix);
+                    generateBuilders, useMPrefix, useDoubleValueGetters);
 
             // Optionally generate the inner builder class
             if (generateBuilders) {
@@ -135,6 +138,7 @@ class GeneratePojos {
     private void parseObject(JsonNode classNode, String className, JPackage jPackage) throws Exception {
         // Find the class if it exists, or create it if it doesn't
         JDefinedClass clazz;
+        log.info(String.format("parseObject(%s), json=%s", className, classNode.toString()));
         if (mClassMap.containsKey(className)) {
             clazz = mClassMap.get(className);
         } else {
@@ -147,6 +151,7 @@ class GeneratePojos {
         // Iterate over all of the fields in this object
         Iterator<Map.Entry<String, JsonNode>> fieldsIterator = classNode.fields();
         while (fieldsIterator.hasNext()) {
+
             // Get the field name and child node
             Map.Entry<String, JsonNode> entry = fieldsIterator.next();
             String childProperty = entry.getKey();
@@ -163,8 +168,10 @@ class GeneratePojos {
 
             // Now attempt to create the field and add it to the field set
             FieldInfo field = getFieldInfoFromNode(childNode, childProperty, jPackage.owner());
+            log.info(String.format("Field: %s, -> %s;%s", childProperty, field.PropertyName, field.Type));
             if (field != null) {
                 mFieldMap.get(clazz).add(field);
+                log.info(String.format("Added %s/%s to %s", field.PropertyName, field.Type, clazz.name()));
             }
         }
     }
@@ -258,7 +265,15 @@ class GeneratePojos {
             // Now return the field as a defined class
             return new FieldInfo(newClass, propertyName);
         } else if (node.isTextual()) {
-            return new FieldInfo(jCodeModel.ref(String.class), propertyName);
+            boolean isNumeric = false;
+            try {
+                Double.parseDouble(node.asText());
+                log.info("Saw numeric text: "+node.asText());
+                isNumeric = true;
+            } catch (NumberFormatException e) {
+                // Ignore
+            }
+            return new FieldInfo(jCodeModel.ref(String.class), propertyName, isNumeric);
         }
 
         // If all else fails, return null
@@ -277,14 +292,14 @@ class GeneratePojos {
      * @throws Exception if an error occurs.
      */
     private List<GeneratedField> generateFields(JDefinedClass clazz, Set<FieldInfo> fields, JCodeModel jCodeModel,
-                                                boolean generateBuilders, boolean useMPrefix) throws Exception {
+                                                boolean generateBuilders, boolean useMPrefix, boolean useDoubleValueGetters) throws Exception {
         List<GeneratedField> generatedFields = new ArrayList<>();
 
         // Get sorted list of field names
         for (FieldInfo fieldInfo : fields) {
             // Create field with correct naming scheme
             String fieldName = formatFieldName(fieldInfo.PropertyName, useMPrefix);
-
+log.info(String.format("generateFields: %s, type:%s/array:%s", fieldName, fieldInfo.Type.name(), fieldInfo.Type.isArray()));
             // Resolve deferred types
             JFieldVar newField;
             if (fieldInfo.Type.equals(mDeferredClass)) {
@@ -322,6 +337,10 @@ class GeneratePojos {
 
                 // Create getter
                 createGetter(clazz, newField, fieldInfo.PropertyName);
+
+                if (useDoubleValueGetters && fieldInfo.isStringIsNumber()) {
+                    createDoubleGetter(clazz, newField, fieldInfo.PropertyName);
+                }
 
                 // Create setter method only if we're not generating a builder class
                 if (!generateBuilders) {
@@ -382,6 +401,8 @@ class GeneratePojos {
      * @param propertyName the original JSON property name.
      */
     private static void annotateField(JFieldVar field, String propertyName) {
+        // TODO; maybe switch to JSON-B annotations
+        /*
         // Use the SerializedName annotation if the field name doesn't match the property name
         if (!field.name().equals(propertyName)) {
             field.annotate(SerializedName.class).param("value", propertyName);
@@ -394,6 +415,7 @@ class GeneratePojos {
             // Otherwise, just add @Expose
             field.annotate(Expose.class);
         }
+        */
     }
 
     /**
@@ -471,6 +493,23 @@ class GeneratePojos {
         body._return(field);
         return getter;
     }
+    private static JMethod createDoubleGetter(JDefinedClass clazz, JFieldVar field, String propertyName) {
+
+        // Method name should start with "get" and then the uppercased class name
+        String name = "get" + formatClassName(propertyName)+"Value";
+        JMethod getter = clazz.method(JMod.PUBLIC, JType.parse(clazz.owner(), "double"), name);
+
+        // Return Double.valueOf(field)
+        JBlock body = getter.body();
+        JClass doubleClass = clazz.owner().ref(Double.class);
+        log.info("doubleClass: "+doubleClass);
+
+        JInvocation valueOf = doubleClass.staticInvoke("valueOf");
+        log.info("valueOf: "+valueOf);
+        valueOf.arg(field);
+        body._return(valueOf);
+        return getter;
+    }
 
     /**
      * Generates a setter for the given class, field, and property name.
@@ -518,9 +557,10 @@ class GeneratePojos {
      * @return the formatted field name.
      */
     static String formatFieldName(String propertyName, boolean useMPrefix) {
-        String fieldName = StringUtils.capitalize(sanitizePropertyName(propertyName));
+        String fieldName = sanitizePropertyName(propertyName);
 
         if (useMPrefix) {
+            fieldName = StringUtils.capitalize(fieldName);
             fieldName = "m" + fieldName;
         }
         return fieldName;
@@ -603,10 +643,24 @@ class GeneratePojos {
     private static class FieldInfo {
         final JType Type;
         final String PropertyName;
+        boolean stringIsNumber;
 
         FieldInfo(JType type, String propertyName) {
             Type = type;
             PropertyName = propertyName;
+        }
+        FieldInfo(JType type, String propertyName, boolean stringIsNumber) {
+            Type = type;
+            PropertyName = propertyName;
+            this.stringIsNumber = stringIsNumber;
+        }
+
+        public boolean isStringIsNumber() {
+            return stringIsNumber;
+        }
+
+        public void setStringIsNumber(boolean stringIsNumber) {
+            this.stringIsNumber = stringIsNumber;
         }
     }
 

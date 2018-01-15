@@ -34,14 +34,14 @@ public class GenerateAction extends AnAction {
             String packageName = ProjectRootManager.getInstance(project).getFileIndex().getPackageNameByDirectory(actionFolder);
 
             // Show JSON dialog
-            JsonEntryDialog dialog = new JsonEntryDialog((className, jsonText, generateBuilders, useMPrefix) -> {
+            JsonEntryDialog dialog = new JsonEntryDialog((className, jsonText, generateBuilders, useMPrefix, useDoubleValueGetters) -> {
                 // Show background process indicator
                 ProgressManager.getInstance().run(new Task.Backgroundable(project, "Json2Pojo Class Generation", false) {
                     @Override
                     public void run(@NotNull ProgressIndicator indicator) {
                         // Generate POJOs
                         GeneratePojos generatePojos = new GeneratePojos(packageName, moduleSourceRoot, indicator);
-                        generatePojos.generateFromJson(className, jsonText, generateBuilders, useMPrefix);
+                        generatePojos.generateFromJson(className, jsonText, generateBuilders, useMPrefix, useDoubleValueGetters);
 
                         // Refresh UI
                         try {
